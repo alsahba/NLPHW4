@@ -2,8 +2,6 @@ import numpy as np
 import pandas as pd
 import dynet as dy
 import json
-from sklearn.preprocessing import LabelEncoder
-from sklearn.preprocessing import OneHotEncoder
 
 
 INPUT_DIM=1000
