@@ -46,7 +46,7 @@
 #         print("average loss is:",total_loss / seen_instances)
 import nltk
 import string
-s = "I'm a little bit john and loves it."
+s = "heroically lost heroically found"
 s = s.translate(string.punctuation)
 l = nltk.word_tokenize(s)
 l = [word.lower() for word in l if word.isalpha()]
