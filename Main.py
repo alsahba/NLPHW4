@@ -4,180 +4,60 @@ import json
 import random
 import nltk
 import math
+import bisect
+from nltk.corpus import stopwords
 
-INPUT_DIM=1000
-HIDDEN_DIM=500
 
-lines = []
-with open("unim_poem.json") as json_file:
-    data = json.load(json_file)
-    for p in data:
-        [lines.append('SOTL ' + line + ' EOTL') for line in p['poem'].split("\n")]
-
+CORPUS_LIMIT = 100
 bigram_dict, wordToIndex, indexToWord = {}, {}, {}
-
-index2 = 0
-corpus_list = []
-for line in lines:
-    line = line.replace("youve", "you have")
-    line = line.replace("'ry", "ery")
-    line = line.replace("th'", "the")
-    line = line.replace("nae ither", "neither")
-    line = line.replace("'n", "en")
-    w_list = [word for word in nltk.word_tokenize(line) if word.isalpha()]
-    [corpus_list.append(w) for w in w_list]
-    for index in range(len(w_list) - 1):
-        if index2 < INPUT_DIM:
-            index2 += 1
-        else:
-            break
-
-        try:
-            bigram_dict[w_list[index]][w_list[index + 1]] += 1
-        except:
-            try:
-                bigram_dict[w_list[index]][w_list[index + 1]] = 1
-            except:
-                bigram_dict[w_list[index]] = {w_list[index + 1]: 1}
-
-    if index2 >= INPUT_DIM:
-        break
-
-
-index = 0
-for dict_items in bigram_dict.items():
-    indexToWord[index] = dict_items[0]
-    wordToIndex[dict_items[0]] = index
-    index += 1
-indexToWord[index] = "EOTL"
-wordToIndex["EOTL"] = index
-
-
-def createOneHotVector(index):
-    generic_zero_vector[index] = 1
-    one_hot_vector = generic_zero_vector.copy()
-    generic_zero_vector[index] = 0
-    return one_hot_vector
-
-
-INPUT_DIM = len(wordToIndex)
-print(INPUT_DIM)
-generic_zero_vector = np.zeros(INPUT_DIM)
 one_hot_vectors = []
-for word in corpus_list:
-    try:
-        index = wordToIndex[word]
-        one_hot_vectors.append(createOneHotVector(index))
-    except:
-        pass
 
 
-model = dy.Model()
-pW = model.add_parameters((HIDDEN_DIM, INPUT_DIM))
-pb = model.add_parameters(HIDDEN_DIM)
-pD = model.add_parameters(INPUT_DIM)
-pU = model.add_parameters((INPUT_DIM, HIDDEN_DIM))
-# m2 = dy.ParameterCollection()
-# pW = m2.add_parameters((HIDDEN_DIM, INPUT_DIM))
-# pb = m2.add_parameters(HIDDEN_DIM)
-# pD = m2.add_parameters(INPUT_DIM)
-# pU = m2.add_parameters((INPUT_DIM, HIDDEN_DIM))
-# m2.populate("tmp.model")
-#
-# # w = dy.parameter(pW)
-# # b = dy.parameter(pb)
-# # d = dy.parameter(pD)
-# # u = dy.parameter(pU)
-# # x = dy.inputVector(one_hot_vectors[0])
-# # y = dy.inputVector(one_hot_vectors[1])
-# # output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
+def readPoems():
+    sentences = []
+    stop_words = set(stopwords.words('english'))
+    with open("unim_poem.json") as json_file:
+        data = json.load(json_file)
+        [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n")]
+    return sentences
 
 
-
-dy.renew_cg()
-total_loss = 0
-seen_instances = 0
-trainer = dy.SimpleSGDTrainer(model)
-for epoch in range(20):
-    for i in range(len(one_hot_vectors) - 1):
-        dy.renew_cg()
-        w = dy.parameter(pW)
-        b = dy.parameter(pb)
-        d = dy.parameter(pD)
-        u = dy.parameter(pU)
-        x = dy.inputVector(one_hot_vectors[i])
-        y = dy.inputVector(one_hot_vectors[i+1])
-
-        output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
-        loss = -dy.log(dy.dot_product(output, y))
-
-        seen_instances += 1
-        total_loss += loss.value()
-        loss.forward()
-        loss.backward()
-        trainer.update()
-
-    print("average loss is:", total_loss / seen_instances)
+def replacer(sentence):
+    sentence = sentence.replace("youve", "you have")
+    sentence = sentence.replace("'ry", "ery")
+    sentence = sentence.replace("th'", "the")
+    sentence = sentence.replace("nae ither", "neither")
+    sentence = sentence.replace("'n", "en")
+    return sentence
 
 
-try:
-    ii = wordToIndex["offended"]
-    ii2 = wordToIndex["a"]
-    generic_zero_vector[ii] = 1
-    x.set(generic_zero_vector.copy())
-    selam = output.npvalue()
-    print(ii2)
-    # print(np.where(selam == selam.max()))
-    print(indexToWord[np.argmax(selam)])
-    print(bigram_dict["offended"])
-    generic_zero_vector[ii] = 0
-except:
-    pass
+def buildCountBasedBigramDictionary(sentences):
+    index2 = 0
+    corpus_list = []
+    for sentence in sentences:
+        sentence = replacer(sentence)
+        w_list = [word for word in nltk.word_tokenize(sentence) if word.isalpha()]
 
+        for index in range(len(w_list) - 1):
+            corpus_list.append(w_list[index])
+            if index2 < CORPUS_LIMIT:
+                index2 += 1
+            else:
+                break
 
-def changeStartWord():
-    ind = random.randint(0, INPUT_DIM - 1)
-    start_word = indexToWord[ind]
-    # sorted_array = np.sort(output.npvalue(), 0)[::-1]
-    # n_most_similar = np.where(output.npvalue() == sorted_array[0])
-    # start_word = indexToWord[n_most_similar[0][0]]
-    while start_word == "SOTL" or start_word == "EOTL":
-        ind = random.randint(0, INPUT_DIM)
-        start_word = indexToWord[ind]
+            try:
+                bigram_dict[w_list[index]][w_list[index + 1]] += 1
+            except:
+                try:
+                    bigram_dict[w_list[index]][w_list[index + 1]] = 1
+                except:
+                    bigram_dict[w_list[index]] = {w_list[index + 1]: 1}
 
-    return start_word
+        corpus_list.append("EOTL")
 
-
-def generatePoems(generated_word="SOTL", line_number=2):
-    poems = []
-    for number_of_poems in range(5):
-        poem = []
-        for number_of_lines in range(line_number):
-            poem_line = []
-            for number_of_words in range(100):
-                index = wordToIndex[generated_word]
-                x.set(createOneHotVector(index))
-                sorted_array = np.sort(output.npvalue(), 0)[::-1]
-                n_most_similar = np.where(output.npvalue() == sorted_array[random.randint(1,5)])
-                new_word = indexToWord[n_most_similar[0][0]]
-                if new_word == "EOTL":
-                    if number_of_words < 5:
-                        n_most_similar = np.where(output.npvalue() == sorted_array[random.randint(0, 30)])
-                        new_word = indexToWord[n_most_similar[0][0]]
-                        if new_word == "EOTL":
-                            break
-                    else:
-                        break
-                poem_line.append(new_word)
-                generated_word = new_word
-            poem.append(poem_line)
-        poems.append(poem)
-        generated_word = changeStartWord()
-    return poems
-
-ss = generatePoems()
-for line in ss:
-    print(line)
+        if index2 >= CORPUS_LIMIT:
+            break
+    return corpus_list
 
 
 def calculateTotalItems(mapping):
@@ -204,5 +84,135 @@ def calculatePerplexity(poems, number_of_lines):
             perplexity = 0
     return perplexity_array
 
+
+def changeStartWord():
+    ind = random.randint(0, INPUT_DIM - 1)
+    start_word = indexToWord[ind]
+    while start_word == "SOTL" or start_word == "EOTL":
+        ind = random.randint(0, INPUT_DIM)
+        start_word = indexToWord[ind]
+    return start_word
+
+
+def generateNewWord(generated_word, generic_zero_vector, min_word_limit):
+    x.set(createWordOneHotVector(generated_word, generic_zero_vector))
+    new_word = cumulativelyGenerate(output.npvalue())
+    if new_word == "EOTL" and min_word_limit > 0:
+        while (new_word == "EOTL" or new_word == "SOTL"):
+            new_word = cumulativelyGenerate(output.npvalue())
+    return new_word
+
+
+def generatePoemLine(generated_word):
+    poem_line = []
+    min_word_limit = 5
+    for number_of_words in range(150):
+        generated_word = generateNewWord(generated_word, generic_zero_vector, min_word_limit)
+        if generated_word == "EOTL":
+            break
+        poem_line.append(generated_word)
+        min_word_limit -= 1
+    return poem_line
+
+
+def generatePoems(generated_word="SOTL", line_number=2):
+    poems = []
+    for number_of_poems in range(5):
+        new_poem = []
+        [new_poem.append(generatePoemLine(generated_word)) for x in range(line_number)]
+        poems.append(new_poem)
+        generated_word = changeStartWord()
+    return poems
+
+
+def buildHelperDictionaries():
+    index = 0
+    for dict_items in bigram_dict.items():
+        indexToWord[index] = dict_items[0]
+        wordToIndex[dict_items[0]] = index
+        index += 1
+    indexToWord[index] = "EOTL"
+    wordToIndex["EOTL"] = index
+
+
+def createOneHotVector(index, generic_zero_vector):
+    generic_zero_vector[index] = 1
+    one_hot_vector = generic_zero_vector.copy()
+    generic_zero_vector[index] = 0
+    return one_hot_vector
+
+
+def createWordOneHotVector(word, generic_zero_vector):
+    index = wordToIndex[word]
+    generic_zero_vector[index] = 1
+    one_hot_vector = generic_zero_vector.copy()
+    generic_zero_vector[index] = 0
+    return one_hot_vector
+
+
+def cumulativelyGenerate(one_hot_vector):
+    cumulative_probability = 0
+    breakpoints = []
+    words = []
+    for index, probability in enumerate(one_hot_vector):
+        cumulative_probability += probability
+        breakpoints.append(cumulative_probability)
+        words.append(indexToWord[index])
+
+    dice = random.uniform(0, 1)
+    convert_breakpoint_to_index = bisect.bisect(breakpoints, dice)
+    return words[convert_breakpoint_to_index]
+
+
+sentences = readPoems()
+corpus_list = buildCountBasedBigramDictionary(sentences)
+buildHelperDictionaries()
+
+INPUT_DIM = len(wordToIndex)
+HIDDEN_DIM = 100
+print(INPUT_DIM)
+generic_zero_vector = np.zeros(INPUT_DIM)
+
+for word in corpus_list:
+    try:
+        index = wordToIndex[word]
+        one_hot_vectors.append(createOneHotVector(index, generic_zero_vector))
+    except:
+        pass
+
+
+model = dy.Model()
+pW = model.add_parameters((HIDDEN_DIM, INPUT_DIM))
+pb = model.add_parameters(HIDDEN_DIM)
+pD = model.add_parameters(INPUT_DIM)
+pU = model.add_parameters((INPUT_DIM, HIDDEN_DIM))
+
+total_loss = 0
+seen_instances = 0
+trainer = dy.SimpleSGDTrainer(model)
+for epoch in range(10):
+    for i in range(len(one_hot_vectors) - 1):
+        dy.renew_cg()
+        w = dy.parameter(pW)
+        b = dy.parameter(pb)
+        d = dy.parameter(pD)
+        u = dy.parameter(pU)
+
+        x = dy.inputVector(one_hot_vectors[i])
+        y = dy.inputVector(one_hot_vectors[i+1])
+        output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
+        loss = -dy.log(dy.dot_product(output, y))
+
+        seen_instances += 1
+        total_loss += loss.value()
+        loss.forward()
+        loss.backward()
+        trainer.update()
+
+    print("average loss is:", total_loss / seen_instances)
+
+ss = generatePoems()
+for line in ss:
+    print(line)
 c = calculatePerplexity(ss, 2)
 print(c)
