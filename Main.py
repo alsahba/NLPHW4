@@ -1,21 +1,53 @@
-import numpy as np
-import dynet as dy
+import bisect
 import json
 import random
-import nltk
+import sys
 import math
-import bisect
+import nltk
+import dynet as dy
+import numpy as np
 from nltk.corpus import stopwords
 
+print("Please enter poem's number of line: ")
+number_of_lines = input()
+invalid_input_flag = True
+while invalid_input_flag:
+    try:
+       val = int(number_of_lines)
+       print("Learning started...")
+       invalid_input_flag = False
+    except ValueError:
+       print("That's not a valid input!")
+       print("Please enter poem's number of line: ")
+       number_of_lines = input()
 
-CORPUS_LIMIT = 100
+# print("If you want put a word limitation on input file enter the amount or press 'q' for running without limitation: ")
+# input_limitation = input()
+# invalid_input_flag = True
+# while invalid_input_flag:
+#     try:
+#         val = int(input_limitation)
+#         print("Yes input string is an Integer.")
+#         print("Input number value is: ", val)
+#         invalid_input_flag = False
+#     except ValueError:
+#         if(input_limitation == "q"):
+#             input_limitation = 100
+#         print("Invalid input!")
+#         print("Please enter a limitation or press 'q': ")
+#         input_limitation = input()
+
+
+number_of_lines = int(number_of_lines)
+CORPUS_LIMIT = 500
+EPOCH = 10
 bigram_dict, wordToIndex, indexToWord = {}, {}, {}
 one_hot_vectors = []
 
 
 def readPoems():
     sentences = []
-    stop_words = set(stopwords.words('english'))
+    # stop_words = set(stopwords.words('english'))
     with open("unim_poem.json") as json_file:
         data = json.load(json_file)
         [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n")]
@@ -60,28 +92,37 @@ def buildCountBasedBigramDictionary(sentences):
     return corpus_list
 
 
-def calculateTotalItems(mapping):
-    return sum(count for word, count in mapping.items())
+def calculateTotalItems(unigram_dict):
+    total_bigram_count =  sum(count for word, count in unigram_dict.items())
+    unique_bigram_count = len(unigram_dict)
+    return total_bigram_count + unique_bigram_count
+
+
+def organizePoemLineForAccuratePerplexity(poem_line):
+    p_line = poem_line.copy()
+    p_line.insert(len(poem_line), "EOTL")
+    p_line.insert(0, "SOTL")
+    return p_line
 
 
 def calculatePerplexity(poems, number_of_lines):
-    perplexity_array = np.zeros((5,number_of_lines))
+    perplexity_array = np.zeros((5, number_of_lines))
     for p_index, poem in enumerate(poems):
-        perplexity = 0
-        for l_index, poem_line in enumerate(poem):
-            for w_index, poem_word in enumerate(poem_line):
-                payda = calculateTotalItems(bigram_dict[poem_word])
-                try:
-                    #todo add one smoothing ekleme
-                    pay = bigram_dict[poem_word][poem_line[w_index + 1]]
-                    temp_perp = math.log2(pay /payda)
-                    perplexity += temp_perp
-                except:
-                    temp_perp = math.log2(1 / payda)
-                    perplexity += temp_perp
-            perplexity = (-1 / len(poem_line) ) * perplexity
-            perplexity_array[p_index][l_index] = perplexity
+        for l_index, p_line in enumerate(poem):
+            poem_line = organizePoemLineForAccuratePerplexity(p_line)
             perplexity = 0
+            for w_index in range(len(poem_line) - 1):
+                current_word = poem_line[w_index]
+                next_word = poem_line[w_index + 1]
+                denominator = calculateTotalItems(bigram_dict[current_word])
+                try:
+                    numerator = bigram_dict[current_word][next_word] + 1
+                    perplexity += math.log2(numerator /denominator)
+                except:
+                    perplexity += math.log2(1 / denominator)
+
+            perplexity = (-1 / len(poem_line)) * perplexity
+            perplexity_array[p_index][l_index] = perplexity
     return perplexity_array
 
 
@@ -96,10 +137,10 @@ def changeStartWord():
 
 def generateNewWord(generated_word, generic_zero_vector, min_word_limit):
     x.set(createWordOneHotVector(generated_word, generic_zero_vector))
-    new_word = cumulativelyGenerate(output.npvalue())
-    if new_word == "EOTL" and min_word_limit > 0:
-        while (new_word == "EOTL" or new_word == "SOTL"):
-            new_word = cumulativelyGenerate(output.npvalue())
+    new_word = generateWithCumulativeDistribution(output.npvalue())
+    if (new_word == "EOTL" or new_word == "SOTL") and min_word_limit > 0:
+        while new_word == "EOTL" or new_word == "SOTL":
+            new_word = generateWithCumulativeDistribution(output.npvalue())
     return new_word
 
 
@@ -115,11 +156,11 @@ def generatePoemLine(generated_word):
     return poem_line
 
 
-def generatePoems(generated_word="SOTL", line_number=2):
+def generatePoems(number_of_lines, generated_word="SOTL"):
     poems = []
     for number_of_poems in range(5):
         new_poem = []
-        [new_poem.append(generatePoemLine(generated_word)) for x in range(line_number)]
+        [new_poem.append(generatePoemLine(generated_word)) for x in range(number_of_lines)]
         poems.append(new_poem)
         generated_word = changeStartWord()
     return poems
@@ -135,13 +176,6 @@ def buildHelperDictionaries():
     wordToIndex["EOTL"] = index
 
 
-def createOneHotVector(index, generic_zero_vector):
-    generic_zero_vector[index] = 1
-    one_hot_vector = generic_zero_vector.copy()
-    generic_zero_vector[index] = 0
-    return one_hot_vector
-
-
 def createWordOneHotVector(word, generic_zero_vector):
     index = wordToIndex[word]
     generic_zero_vector[index] = 1
@@ -150,7 +184,7 @@ def createWordOneHotVector(word, generic_zero_vector):
     return one_hot_vector
 
 
-def cumulativelyGenerate(one_hot_vector):
+def generateWithCumulativeDistribution(one_hot_vector):
     cumulative_probability = 0
     breakpoints = []
     words = []
@@ -173,12 +207,13 @@ HIDDEN_DIM = 100
 print(INPUT_DIM)
 generic_zero_vector = np.zeros(INPUT_DIM)
 
+
+# todo try catch olmayinca kaldirilabilir direkt
 for word in corpus_list:
     try:
-        index = wordToIndex[word]
-        one_hot_vectors.append(createOneHotVector(index, generic_zero_vector))
+        one_hot_vectors.append(createWordOneHotVector(word, generic_zero_vector))
     except:
-        pass
+        print("oops")
 
 
 model = dy.Model()
@@ -189,19 +224,24 @@ pU = model.add_parameters((INPUT_DIM, HIDDEN_DIM))
 
 total_loss = 0
 seen_instances = 0
+
 trainer = dy.SimpleSGDTrainer(model)
-for epoch in range(10):
-    for i in range(len(one_hot_vectors) - 1):
+for epoch in range(EPOCH):
+    for index in range(len(one_hot_vectors) - 1):
         dy.renew_cg()
         w = dy.parameter(pW)
         b = dy.parameter(pb)
         d = dy.parameter(pD)
         u = dy.parameter(pU)
 
-        x = dy.inputVector(one_hot_vectors[i])
-        y = dy.inputVector(one_hot_vectors[i+1])
+        x = dy.inputVector(one_hot_vectors[index])
+        y = dy.inputVector(one_hot_vectors[index+1])
         output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
-        loss = -dy.log(dy.dot_product(output, y))
+        
+        if y == 0:
+            loss = -dy.log(1 - dy.dot_product(output, y))
+        else:
+            loss = -dy.log(dy.dot_product(output, y))
 
         seen_instances += 1
         total_loss += loss.value()
@@ -209,10 +249,22 @@ for epoch in range(10):
         loss.backward()
         trainer.update()
 
-    print("average loss is:", total_loss / seen_instances)
+    sys.stdout.write("\r%s%s%f%s%d%%" % (
+        "Learning is processing...\t", "Average loss: ", total_loss / seen_instances,
+        "\t Completion Rate: ", ((epoch / EPOCH) * 100)))
+    sys.stdout.flush()
+    # print("average loss is:", total_loss / seen_instances)
 
-ss = generatePoems()
-for line in ss:
-    print(line)
-c = calculatePerplexity(ss, 2)
-print(c)
+print("\n\n")
+poems = generatePoems(number_of_lines)
+perplexity_array = calculatePerplexity(poems, number_of_lines)
+
+def printPoems(poems, perplexity_array):
+    for p_index, poem in enumerate(poems):
+        print("{} th poem".format(p_index+1))
+        for l_index, poem_line in enumerate(poem):
+            print("{} \t\t ---> Perplexity of line: {}".format(poem_line, perplexity_array[p_index][l_index]))
+            # print(''.join(poem_line).join(("\t\t\t\t --->Perplexity of line: {}").format(perplexity_array[p_index][l_index])))
+        print("\n")
+
+printPoems(poems, perplexity_array)
