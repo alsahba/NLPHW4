@@ -7,7 +7,13 @@ import nltk
 import dynet as dy
 import numpy as np
 from nltk.corpus import stopwords
+from collections import Counter
 
+
+# We defined the epoch number and helper structures.
+EPOCH = 10
+bigram_dict, wordToIndex, indexToWord = {}, {}, {}
+one_hot_vectors, unk_words = [], []
 
 # User interaction part, program asks a number for poetry lines of a poem.
 # Checks whether the input is valid or not, if valid continues with the user input.
@@ -16,38 +22,12 @@ number_of_lines = input()
 invalid_input_flag = True
 while invalid_input_flag:
     try:
-       number_of_lines = int(number_of_lines)
-       print("Learning started...")
-       invalid_input_flag = False
+        number_of_lines = int(number_of_lines)
+        invalid_input_flag = False
     except ValueError:
-       print("That's not a valid input!")
-       print("Please enter poem's number of line: ")
-       number_of_lines = input()
-
-# print("If you want put a word limitation on input file enter the amount or press 'q' for running without limitation: ")
-# input_limitation = input()
-# invalid_input_flag = True
-# while invalid_input_flag:
-#     try:
-#         val = int(input_limitation)
-#         print("Yes input string is an Integer.")
-#         print("Input number value is: ", val)
-#         invalid_input_flag = False
-#     except ValueError:
-#         if(input_limitation == "q"):
-#             input_limitation = 100
-#         print("Invalid input!")
-#         print("Please enter a limitation or press 'q': ")
-#         input_limitation = input()
-
-
-# We defined the epoch number and helper structures.
-# Bigram dictionary used for calculations in perplexity.
-# Also, we defined two dictionary for detecting word to location and location to word.
-CORPUS_LIMIT = 1000
-EPOCH = 10
-bigram_dict, wordToIndex, indexToWord = {}, {}, {}
-one_hot_vectors = []
+        print("That's not a valid input!")
+        print("Please enter poem's number of line: ")
+        number_of_lines = input()
 
 
 # This method used for reading json file.
@@ -55,13 +35,14 @@ one_hot_vectors = []
 # SOTL is shortening of Start Of The Line and EOTL is shortening of End Of The Line.
 # <s> and </s> tokens is not used because of word tokenizer of nltk deletes /s token after split the </s> token into
 # '<', '/s' and '>', this created different problems in different places.
+# WARNING: Because of the long runtime processed number of poems limited to first 1000 poems, you may change it.
 def readPoems():
     sentences = []
-    # stop_words = set(stopwords.words('english'))
     with open("unim_poem.json") as json_file:
         data = json.load(json_file)
-        [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n")]
+        [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n") if int(poem['id']) < 1000]
     return sentences
+
 
 # Most of the words in the Json file are misspelled, this method used for correction in the words of a sentence.
 def wordCorrecter(sentence):
@@ -73,35 +54,44 @@ def wordCorrecter(sentence):
     return sentence
 
 
-# This method builds a bigram structure with nested dictionaries. We filled the bigram dictionary with bigrams
-# and store counts of them. Useful in the perplexity calculation part while calculating conditional probability.
-def buildCountBasedBigramDictionary(sentences):
-    index2 = 0
+# This method used for detection of words' frequencies then replace them with 'UNK' symbol.
+# Also, splits sentence to words.
+# All sentences taken as parameter and iterated over for loop, word corrections made in the sentences.
+# Then corpus list without UNK symbol created.
+# Counting frequencies in the corpus list.
+# Words selected with respect to frequency counts to actual corpus list,
+# if frequency is not enough word replaced with 'UNK' symbol.
+# Words with lower frequencies added to unknown words list for later usage in generation.
+# Also a vocabulary created for helper dictionaries.
+# Corpus lists and vocabulary returned in the end.
+def splitSentencesWithRespectToFrequencies(sentences):
+    temp_list = []
     corpus_list = []
+    stop_words = set(stopwords.words('english'))
     for sentence in sentences:
         sentence = wordCorrecter(sentence)
-        w_list = [word for word in nltk.word_tokenize(sentence) if word.isalpha()]
+        w_list = [word for word in nltk.word_tokenize(sentence) if (word.isalpha() and word not in stop_words)]
+        [temp_list.append(word) for word in w_list]
+    word_set_with_counts = Counter(temp_list)
 
-        for index in range(len(w_list) - 1):
-            corpus_list.append(w_list[index])
-            if index2 < CORPUS_LIMIT:
-                index2 += 1
-            else:
-                break
+    [unk_words.append(word) for word in word_set_with_counts if int(word_set_with_counts[word]) <= 5]
+    [corpus_list.append(word) if word not in unk_words else corpus_list.append("UNK") for word in temp_list]
+    word_set_with_counts.clear()
+    vocab = set(corpus_list)
+    return corpus_list, temp_list, vocab
 
+
+# This method builds a bigram structure with nested dictionaries. We filled the bigram dictionary with bigrams
+# and store counts of them. Useful in the perplexity calculation part while calculating conditional probability.
+def buildCountBasedBigramDictionary(w_list):
+    for index in range(len(w_list) - 1):
+        try:
+            bigram_dict[w_list[index]][w_list[index + 1]] += 1
+        except:
             try:
-                bigram_dict[w_list[index]][w_list[index + 1]] += 1
+                bigram_dict[w_list[index]][w_list[index + 1]] = 1
             except:
-                try:
-                    bigram_dict[w_list[index]][w_list[index + 1]] = 1
-                except:
-                    bigram_dict[w_list[index]] = {w_list[index + 1]: 1}
-
-        corpus_list.append("EOTL")
-
-        if index2 >= CORPUS_LIMIT:
-            break
-    return corpus_list
+                bigram_dict[w_list[index]] = {w_list[index + 1]: 1}
 
 
 # This method used for determining denominator while doing perplexity calculations.
@@ -122,33 +112,12 @@ def organizePoemLineForAccuratePerplexity(poem_line):
     return p_line
 
 
-def calculatePerplexity(poems, number_of_lines):
-    perplexity_array = np.zeros((5, number_of_lines))
-    for p_index, poem in enumerate(poems):
-        for l_index, p_line in enumerate(poem):
-            poem_line = organizePoemLineForAccuratePerplexity(p_line)
-            perplexity = 0
-            for w_index in range(len(poem_line) - 1):
-                current_word = poem_line[w_index]
-                next_word = poem_line[w_index + 1]
-                denominator = calculateTotalItems(bigram_dict[current_word])
-                try:
-                    numerator = bigram_dict[current_word][next_word] + 1
-                    perplexity += math.log2(numerator /denominator)
-                except:
-                    perplexity += math.log2(1 / denominator)
-
-            perplexity = (-1 / len(poem_line)) * perplexity
-            perplexity_array[p_index][l_index] = perplexity
-    return perplexity_array
-
-
 # This method used for calculating generated poems' perplexities.
 # Poem list taken as a parameter, a perplexity array created.
 # Then, with nested for loops word by word probability calculated.
 # For each poem, perplexity formula applied and result put in the array.
 # This perplexity array returned from the method.
-def calculatePerplexityPoem(poems):
+def calculatePerplexity(poems):
     perplexity_array = np.zeros(5)
     for p_index, poem in enumerate(poems):
         perplexity, length = 0, 0
@@ -205,6 +174,8 @@ def generateNewWord(current_word, generic_zero_vector, min_word_limit):
 # Other limitation is maximum word limit for a new poem line, it equals to 150
 # which means that new line's number of words must be lower or equal than 150.
 # Between the two limitations if a sentence end delimiter generated (EOTL), line is considered finished.
+# Also as a reason of the word limitation with respect to frequency,
+# If a UNK symbol comes up we randomly select a word from unknown word list.
 # After all that new poem line returned.
 def generatePoemLine(generated_word):
     poem_line = []
@@ -213,7 +184,10 @@ def generatePoemLine(generated_word):
         generated_word = generateNewWord(generated_word, generic_zero_vector, min_word_limit)
         if generated_word == "EOTL":
             break
-        poem_line.append(generated_word)
+        elif generated_word == "UNK":
+            poem_line.append(unk_words[random.randint(0, len(unk_words) - 1)])
+        else:
+            poem_line.append(generated_word)
         min_word_limit -= 1
     return poem_line
 
@@ -237,17 +211,13 @@ def generatePoems(number_of_lines, generated_word="SOTL"):
 
 
 # This method used for building helper dictionaries.
-# It iterates all unique words and build a composite double sided dictionary structure.
-# NOTE: Because of the bigram's nature EOTL has been never encountered as first word of a bigram.
-# So, we add it both dictionaries in the end, because of the iteration of bigram's first words.
-def buildHelperDictionaries():
+# It iterates vocabulary's words and build a composite double sided dictionary structure.
+def buildHelperDictionaries(vocab):
     index = 0
-    for dict_items in bigram_dict.items():
-        indexToWord[index] = dict_items[0]
-        wordToIndex[dict_items[0]] = index
+    for item in vocab:
+        indexToWord[index] = item
+        wordToIndex[item] = index
         index += 1
-    indexToWord[index] = "EOTL"
-    wordToIndex["EOTL"] = index
 
 
 # This method used for creating one-hot vector of a word.
@@ -288,24 +258,30 @@ def generateWithCumulativeDistribution(output_vector):
     return words[convert_breakpoint_to_index]
 
 
-sentences = readPoems()
-corpus_list = buildCountBasedBigramDictionary(sentences)
-buildHelperDictionaries()
+# This method used for printing generated poems and their perplexity.
+def printPoems(poems, perplexity_array):
+    for p_index, poem in enumerate(poems):
+        print("\n\n{}th poem \t -----> \t Perplexity of poem: {}".format(p_index+1, perplexity_array[p_index]))
+        for l_index, poem_line in enumerate(poem):
+            print(" ".join(poem_line))
 
-INPUT_DIM = len(wordToIndex)
-HIDDEN_DIM = 100
-print(INPUT_DIM)
+# Poems split into sentences.
+sentences = readPoems()
+# Vocabulary and corpus lists are ready for processing.
+corpus_list, corpus_without_unknows, vocab = splitSentencesWithRespectToFrequencies(sentences)
+# Bigram dictionary built with respect to actual corpus list for conditional probabilities.
+buildCountBasedBigramDictionary(corpus_without_unknows)
+# Helper dictionaries built with respect to vocabulary.
+buildHelperDictionaries(vocab)
+
+# Input dimension assigned with respect to vocabulary.
+INPUT_DIM = len(vocab)
+# Hidden neuron layer's dimension assigned.
+HIDDEN_DIM = 200
+# Generic zero vector created with respect to input dimension.
 generic_zero_vector = np.zeros(INPUT_DIM)
 
-
-# todo try catch olmayinca kaldirilabilir direkt
-for word in corpus_list:
-    try:
-        one_hot_vectors.append(createWordOneHotVector(word, generic_zero_vector))
-    except:
-        print("oops")
-
-
+# Model created, parameters defined.
 model = dy.Model()
 pW = model.add_parameters((HIDDEN_DIM, INPUT_DIM))
 pb = model.add_parameters(HIDDEN_DIM)
@@ -315,19 +291,22 @@ pU = model.add_parameters((INPUT_DIM, HIDDEN_DIM))
 total_loss = 0
 seen_instances = 0
 
+print("Learning started...")
 trainer = dy.SimpleSGDTrainer(model)
 for epoch in range(EPOCH):
-    for index in range(len(one_hot_vectors) - 1):
+    for index in range(len(corpus_list) - 1):
+        current_word = corpus_list[index]
+        next_word = corpus_list[index+1]
         dy.renew_cg()
         w = dy.parameter(pW)
         b = dy.parameter(pb)
         d = dy.parameter(pD)
         u = dy.parameter(pU)
 
-        x = dy.inputVector(one_hot_vectors[index])
-        y = dy.inputVector(one_hot_vectors[index+1])
+        x = dy.inputVector(createWordOneHotVector(current_word, generic_zero_vector))
+        y = dy.inputVector(createWordOneHotVector(next_word, generic_zero_vector))
         output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
-        
+
         if y == 0:
             loss = -dy.log(1 - dy.dot_product(output, y))
         else:
@@ -341,24 +320,13 @@ for epoch in range(EPOCH):
 
     sys.stdout.write("\r%s%s%f%s%d%%" % (
         "Learning is processing...\t", "Average loss: ", total_loss / seen_instances,
-        "\t Completion Rate: ", ((epoch / EPOCH) * 100)))
+        "\t Completion Rate: ", (((epoch+1) / EPOCH) * 100)))
     sys.stdout.flush()
-    # print("average loss is:", total_loss / seen_instances)
 
-print("\n\n")
+# Poems generated with respect to number of lines.
 poems = generatePoems(number_of_lines)
-# perplexity_array = calculatePerplexity(poems, number_of_lines)
-poem_perplexity_array = calculatePerplexityPoem(poems)
-
-def printPoems(poems, perplexity_array):
-    for p_index, poem in enumerate(poems):
-        print("{}th poem \t -----> \t Perplexity of poem: {}".format(p_index+1, poem_perplexity_array[p_index]))
-        for l_index, poem_line in enumerate(poem):
-            print(" ".join(poem_line))
-            # print("{} \t\t ---> Perplexity of line: {}".format(poem_line, perplexity_array[p_index][l_index]))
-            # print(" ".join(poem_line) + " \t\t ---> Perplexity of line: {}".format(perplexity_array[p_index][l_index]))
-            # print(''.join(poem_line).join(("\t\t\t\t --->Perplexity of line: {}").format(perplexity_array[p_index][l_index])))
-        print("\n")
-
+# Generated poems' perplexities calculated.
+poem_perplexity_array = calculatePerplexity(poems)
+# Poems printed with their perplexities.
 printPoems(poems, poem_perplexity_array)
 
