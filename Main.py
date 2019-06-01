@@ -9,11 +9,10 @@ import numpy as np
 from nltk.corpus import stopwords
 from collections import Counter
 
-
 # We defined the epoch number and helper structures.
 EPOCH = 10
 bigram_dict, wordToIndex, indexToWord = {}, {}, {}
-one_hot_vectors, unk_words = [], []
+unk_words = []
 
 # User interaction part, program asks a number for poetry lines of a poem.
 # Checks whether the input is valid or not, if valid continues with the user input.
@@ -35,12 +34,11 @@ while invalid_input_flag:
 # SOTL is shortening of Start Of The Line and EOTL is shortening of End Of The Line.
 # <s> and </s> tokens is not used because of word tokenizer of nltk deletes /s token after split the </s> token into
 # '<', '/s' and '>', this created different problems in different places.
-# WARNING: Because of the long runtime processed number of poems limited to first 1000 poems, you may change it.
 def readPoems():
     sentences = []
     with open("unim_poem.json") as json_file:
         data = json.load(json_file)
-        [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n") if int(poem['id']) < 1000]
+        [sentences.append('SOTL ' + line + ' EOTL') for poem in data for line in poem['poem'].split("\n")]
     return sentences
 
 
@@ -74,8 +72,9 @@ def splitSentencesWithRespectToFrequencies(sentences):
         [temp_list.append(word) for word in w_list]
     word_set_with_counts = Counter(temp_list)
 
-    [unk_words.append(word) for word in word_set_with_counts if int(word_set_with_counts[word]) <= 5]
+    [unk_words.append(word) for word in word_set_with_counts if int(word_set_with_counts[word]) < 2]
     [corpus_list.append(word) if word not in unk_words else corpus_list.append("UNK") for word in temp_list]
+
     word_set_with_counts.clear()
     vocab = set(corpus_list)
     return corpus_list, temp_list, vocab
@@ -133,7 +132,7 @@ def calculatePerplexity(poems):
                     perplexity += math.log2(numerator / denominator)
                 except:
                     perplexity += math.log2(1 / denominator)
-        perplexity = (-1 / length) * perplexity
+        perplexity = math.pow(2, (-1 / length) * perplexity)
         perplexity_array[p_index] = perplexity
     return perplexity_array
 
@@ -142,6 +141,7 @@ def calculatePerplexity(poems):
 # If a word occurred lots of time there is more likely comes up first word of the poem.
 # This method randomly selects a word from the vocabulary of model.
 # Also, checks that if the random word is sentence delimiter or not.
+# WARNING: This is not used currently, you can uncomment it in the generation.
 def changeStartWord():
     ind = random.randint(0, INPUT_DIM - 1)
     start_word = indexToWord[ind]
@@ -153,15 +153,15 @@ def changeStartWord():
 
 # This method is a helper method of generation it creates new word.
 # Current word is taken as parameter and next word generated with respect to it.
-# Current word's one-hot vector created and given the FNN as input, then output changes with respect to it.
+# Current word's one-hot vector created and given to neural network as input, then output changes with respect to it.
 # In the word generation cumulative distribution used, output of the current word's one hot vector give to helper method.
 # After the generated word returned from the helper method,
 # this method checks whether the new word is sentence delimiter or not.
 # If so, helper method called until new word is no more a sentence delimiter.
-def generateNewWord(current_word, generic_zero_vector, min_word_limit):
-    x.set(createWordOneHotVector(current_word, generic_zero_vector))
+def generateNewWord(current_word, min_word_limit):
+    x.set(dy.one_hot(INPUT_DIM, wordToIndex[current_word]).npvalue())
     new_word = generateWithCumulativeDistribution(output.npvalue())
-    if (new_word == "EOTL" or new_word == "SOTL") and min_word_limit > 0:
+    if min_word_limit > 0:
         while new_word == "EOTL" or new_word == "SOTL":
             new_word = generateWithCumulativeDistribution(output.npvalue())
     return new_word
@@ -181,7 +181,7 @@ def generatePoemLine(generated_word):
     poem_line = []
     min_word_limit = 5
     for number_of_words in range(150):
-        generated_word = generateNewWord(generated_word, generic_zero_vector, min_word_limit)
+        generated_word = generateNewWord(generated_word, min_word_limit)
         if generated_word == "EOTL":
             break
         elif generated_word == "UNK":
@@ -220,20 +220,6 @@ def buildHelperDictionaries(vocab):
         index += 1
 
 
-# This method used for creating one-hot vector of a word.
-# It takes word and zero vector as parameters.
-# Zero vector is an array filled with zeros and its size equals to FNN model's vocabulary size.
-# So, by looking the helper dictionary word's location in the vocabulary detected
-# and this location changed to '1' in the zero vector. Then zero vector set to defaults again for the next creations.
-# In the end, one-hot vector returned.
-def createWordOneHotVector(word, generic_zero_vector):
-    index = wordToIndex[word]
-    generic_zero_vector[index] = 1
-    one_hot_vector = generic_zero_vector.copy()
-    generic_zero_vector[index] = 0
-    return one_hot_vector
-
-
 # This method used for generate new word with respect to cumulative distribution of output vector of a word.
 # Output vector taken as parameter, two lists are created,
 # one of them for words other of them for breakpoints of a distribution.
@@ -265,6 +251,7 @@ def printPoems(poems, perplexity_array):
         for l_index, poem_line in enumerate(poem):
             print(" ".join(poem_line))
 
+
 # Poems split into sentences.
 sentences = readPoems()
 # Vocabulary and corpus lists are ready for processing.
@@ -277,40 +264,39 @@ buildHelperDictionaries(vocab)
 # Input dimension assigned with respect to vocabulary.
 INPUT_DIM = len(vocab)
 # Hidden neuron layer's dimension assigned.
-HIDDEN_DIM = 200
-# Generic zero vector created with respect to input dimension.
-generic_zero_vector = np.zeros(INPUT_DIM)
+HIDDEN_DIM = 100
 
 # Model created, parameters defined.
 model = dy.Model()
 pW = model.add_parameters((HIDDEN_DIM, INPUT_DIM))
 pb = model.add_parameters(HIDDEN_DIM)
-pD = model.add_parameters(INPUT_DIM)
+pd = model.add_parameters(INPUT_DIM)
 pU = model.add_parameters((INPUT_DIM, HIDDEN_DIM))
 
-total_loss = 0
-seen_instances = 0
 
 print("Learning started...")
 trainer = dy.SimpleSGDTrainer(model)
 for epoch in range(EPOCH):
+    total_loss = 0
+    seen_instances = 0
     for index in range(len(corpus_list) - 1):
         current_word = corpus_list[index]
         next_word = corpus_list[index+1]
+
+        # Sentence delimiter tokens are not trained.
+        if current_word == "EOTL" and next_word == "SOTL":
+            continue
         dy.renew_cg()
         w = dy.parameter(pW)
         b = dy.parameter(pb)
-        d = dy.parameter(pD)
+        d = dy.parameter(pd)
         u = dy.parameter(pU)
 
-        x = dy.inputVector(createWordOneHotVector(current_word, generic_zero_vector))
-        y = dy.inputVector(createWordOneHotVector(next_word, generic_zero_vector))
+        x = dy.inputVector(dy.one_hot(INPUT_DIM, wordToIndex[current_word]).npvalue())
+        y = dy.inputVector(dy.one_hot(INPUT_DIM, wordToIndex[next_word]).npvalue())
         output = dy.softmax(u * (dy.tanh((w * x) + b)) + d)
 
-        if y == 0:
-            loss = -dy.log(1 - dy.dot_product(output, y))
-        else:
-            loss = -dy.log(dy.dot_product(output, y))
+        loss = -dy.log(dy.dot_product(output, y))
 
         seen_instances += 1
         total_loss += loss.value()
@@ -329,4 +315,3 @@ poems = generatePoems(number_of_lines)
 poem_perplexity_array = calculatePerplexity(poems)
 # Poems printed with their perplexities.
 printPoems(poems, poem_perplexity_array)
-
